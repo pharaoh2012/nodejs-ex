@@ -1,125 +1,82 @@
-//  OpenShift sample Node application
-var express = require('express'),
-    app     = express(),
-    morgan  = require('morgan');
-    
-Object.assign=require('object-assign')
+var http = require('http');
+var https = require("https");
+var url = require('url');
+var qs = require('querystring');
 
-app.engine('html', require('ejs').renderFile);
-app.use(morgan('combined'))
-
-var port = process.env.PORT || process.env.OPENSHIFT_NODEJS_PORT || 8080,
-    ip   = process.env.IP   || process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0',
-    mongoURL = process.env.OPENSHIFT_MONGODB_DB_URL || process.env.MONGO_URL,
-    mongoURLLabel = "";
-
-if (mongoURL == null) {
-  var mongoHost, mongoPort, mongoDatabase, mongoPassword, mongoUser;
-  // If using plane old env vars via service discovery
-  if (process.env.DATABASE_SERVICE_NAME) {
-    var mongoServiceName = process.env.DATABASE_SERVICE_NAME.toUpperCase();
-    mongoHost = process.env[mongoServiceName + '_SERVICE_HOST'];
-    mongoPort = process.env[mongoServiceName + '_SERVICE_PORT'];
-    mongoDatabase = process.env[mongoServiceName + '_DATABASE'];
-    mongoPassword = process.env[mongoServiceName + '_PASSWORD'];
-    mongoUser = process.env[mongoServiceName + '_USER'];
-
-  // If using env vars from secret from service binding  
-  } else if (process.env.database_name) {
-    mongoDatabase = process.env.database_name;
-    mongoPassword = process.env.password;
-    mongoUser = process.env.username;
-    var mongoUriParts = process.env.uri && process.env.uri.split("//");
-    if (mongoUriParts.length == 2) {
-      mongoUriParts = mongoUriParts[1].split(":");
-      if (mongoUriParts && mongoUriParts.length == 2) {
-        mongoHost = mongoUriParts[0];
-        mongoPort = mongoUriParts[1];
-      }
-    }
-  }
-
-  if (mongoHost && mongoPort && mongoDatabase) {
-    mongoURLLabel = mongoURL = 'mongodb://';
-    if (mongoUser && mongoPassword) {
-      mongoURL += mongoUser + ':' + mongoPassword + '@';
-    }
-    // Provide UI label that excludes user id and pw
-    mongoURLLabel += mongoHost + ':' + mongoPort + '/' + mongoDatabase;
-    mongoURL += mongoHost + ':' +  mongoPort + '/' + mongoDatabase;
-  }
+function deleteScript(html) {
+	for (var i = 0; i < 50; ++i) {
+		var startIndex = html.indexOf("<script");
+		if (startIndex === -1)
+			break;
+		var endIndex = html.indexOf("</script>", startIndex);
+		if (endIndex === -1)
+			break;
+		html = html.substring(0, startIndex) + html.substring(endIndex + 9, html.length);
+	}
+	return html;
 }
-var db = null,
-    dbDetails = new Object();
 
-var initDb = function(callback) {
-  if (mongoURL == null) return;
+var server = http.createServer(function(req, res) {
 
-  var mongodb = require('mongodb');
-  if (mongodb == null) return;
+	if (req.url === "/favicon.ico") {
+		res.writeHead(404, {});
+		res.end('not found');
+	}
 
-  mongodb.connect(mongoURL, function(err, conn) {
-    if (err) {
-      callback(err);
-      return;
-    }
+	var u = url.parse(req.url);
+	if (u.pathname === "/search") {
+		var query = qs.parse(u.query);
+		if (!query.q) {
+			res.end("usage: /search?q=...");
+			return;
+		}
+		var options = {
+			hostname: "www.google.com",
+			port: 443,
+			path: req.url,
+			headers: {
+				"Accept-Language": "zh,zh-CN;q=0.8,zh-TW;q=0.6,en-US;q=0.4,en;q=0.2",
+				"referer": "https://www.google.com/",
+				"User-Agent": "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/48.0.2564.116 Safari/537.36",
+				//"Cookie": "PREF=ID=047808f19f6de346:U=0f62f33dd8549d11:FF=2:LD=zh-CN:NW=1:TM=1325338577:LM=1332142444:GM=1:SG=2:S=rE0SyJh2w1IQ-Maw"
+				"Cookie": "NID=79=pYKcZt3rrjBMtTcOUR6JVQJjZ8WUlbhLJeOd_531UdtB6_xLFnB1eJd7YfkESbXpcfG5I5z3U62jasOFccRrmPROJp2RDu5wbaO6UhuVLG-u2HqANSGZ9nIi-1zluEWbLAXpDdkBrc674hexXyp65Q"
+			}
+		};
 
-    db = conn;
-    dbDetails.databaseName = db.databaseName;
-    dbDetails.url = mongoURLLabel;
-    dbDetails.type = 'MongoDB';
+		var request = https.request(options, function(response) {
+			var data = "";
+			response.on("data", function(d) {
+				data += d;
+			});
+			response.on("end", function() {
+				res.writeHead(200, {
+					"Content-Type": "text/html;charset=utf-8"
+				});
+				res.end(deleteScript(data));
+				//res.end(data.replace(/<script.+?<\/script>/mg, ""));
+				//res.end(data.replace(/<script.*?>/mg, "<noscript>").replace(/<\/script>/g, "</noscript>"));
+			});
 
-    console.log('Connected to MongoDB at: %s', mongoURL);
-  });
-};
+		}).on("error", function(err) {
+			var googleurl = "https://www.google.com" + req.url;
+			var baiduurl = "https://www.baidu.com/s?wd=" + query.q;
+			res.writeHead(200, {
+				"Content-Type": "text/html;charset=utf-8"
+			});
 
-app.get('/', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    var col = db.collection('counts');
-    // Create a document with request IP and current time of request
-    col.insert({ip: req.ip, date: Date.now()});
-    col.count(function(err, count){
-      if (err) {
-        console.log('Error running count. Message:\n'+err);
-      }
-      res.render('index.html', { pageCountMessage : count, dbInfo: dbDetails });
-    });
-  } else {
-    res.render('index.html', { pageCountMessage : null});
-  }
+			res.end(err.message + "<br /><a href='" + googleurl + "'>" + googleurl + "</a>" +
+				"<br /><a href='" + baiduurl + "'>" + baiduurl + "</a>");
+		});
+		request.setTimeout(5000, function() {
+			request.abort();
+		});
+		request.end();
+		return;
+	}
+	res.writeHead(404, {});
+	res.end("usage: /search?q=...");
+
 });
-
-app.get('/pagecount', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    db.collection('counts').count(function(err, count ){
-      res.send('{ pageCount: ' + count + '}');
-    });
-  } else {
-    res.send('{ pageCount: -1 }');
-  }
-});
-
-// error handling
-app.use(function(err, req, res, next){
-  console.error(err.stack);
-  res.status(500).send('Something bad happened!');
-});
-
-initDb(function(err){
-  console.log('Error connecting to Mongo. Message:\n'+err);
-});
-
-app.listen(port, ip);
-console.log('Server running on http://%s:%s', ip, port);
-
-module.exports = app ;
+var port = process.env.PORT || process.env.OPENSHIFT_NODEJS_PORT || 8080;
+var ip   = process.env.IP   || process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0';
+server.listen(port, ip);
